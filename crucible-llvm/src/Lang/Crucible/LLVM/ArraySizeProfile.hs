@@ -1,6 +1,6 @@
 {-# OPTIONS -Wall #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings, LambdaCase, TypeOperators, ExplicitForAll #-}
+{-# LANGUAGE OverloadedStrings, TypeOperators, ExplicitForAll #-}
 {-# LANGUAGE ViewPatterns, PatternSynonyms #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -24,7 +24,7 @@ import Data.Eq ((==), (/=))
 import Data.Functor ((<$>))
 import Data.Foldable (msum)
 import Data.Function ((.), ($), const)
-import Data.Bool (Bool(..))
+import Data.Bool (Bool(..), otherwise)
 import Data.Tuple (fst)
 import Data.Maybe (Maybe(..))
 import Data.List (elem, filter, lookup)
@@ -63,10 +63,8 @@ type Profile = (Text, [[Maybe Int]])
 ptrStartsAlloc :: IsExpr (SymExpr sym) =>
                   C.LLVMPtr sym w ->
                   Maybe ()
-ptrStartsAlloc (C.llvmPointerView -> (_, bv)) =
-  case asUnsignedBV bv of
-    Just 0 -> Just ()
-    _ -> Nothing
+ptrStartsAlloc (C.llvmPointerView -> (_, asUnsignedBV -> Just 0)) = Just ()
+ptrStartsAlloc _ = Nothing
 
 ptrAllocSize :: forall sym w. IsExpr (SymExpr sym) =>
                 [G.MemAlloc sym] ->
@@ -94,10 +92,9 @@ intrinsicIsArray :: IsExprBuilder sym =>
                     C.CtxRepr ctx ->
                     C.Intrinsic sym nm ctx ->
                     Maybe Int
-intrinsicIsArray mem s (Empty :> C.BVRepr _w) i =
-  case testEquality s (knownSymbol :: SymbolRepr "LLVM_pointer") of
-    Just Refl -> ptrIsArray mem i
-    _ -> Nothing
+intrinsicIsArray mem
+  (testEquality (knownSymbol :: SymbolRepr "LLVM_pointer") -> Just Refl)
+  (Empty :> C.BVRepr _w) i = ptrIsArray mem i
 intrinsicIsArray _ _ _ _ = Nothing
 
 regValueIsArray :: IsExprBuilder sym =>
@@ -135,9 +132,9 @@ arraySizeProfile _ llvm cell = do
         (C.CrucibleCall _
           C.CallFrame { C._frameCFG = g
                       , C._frameRegs = regs
-                      }) sim -> do
+                      }) sim ->
         let globals = view (C.stateTree . C.actFrame . C.gpGlobals) sim
-        case C.memImplHeap <$> C.lookupGlobal (C.llvmMemVar llvm) globals of
+        in case C.memImplHeap <$> C.lookupGlobal (C.llvmMemVar llvm) globals of
           Nothing -> pure ()
           Just mem ->
             modifyIORef' cell
@@ -146,9 +143,8 @@ arraySizeProfile _ llvm cell = do
                     sizes = argArraySizes (G.memAllocs mem) $ C.regMap regs
                 in case lookup name profs of
                   Nothing -> (name, [sizes]):profs
-                  Just variants ->
-                    if elem sizes variants
-                    then profs
-                    else (name, sizes:variants):filter ((/= name) . fst) profs
-        be s
-      _ -> be s
+                  Just variants
+                    | elem sizes variants -> profs
+                    | otherwise -> (name, sizes:variants):filter ((/= name) . fst) profs
+      _ -> pure ()
+    be s
