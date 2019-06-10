@@ -8,7 +8,7 @@
 -- Stability        : provisional
 --
 -- This module provides an execution feature for bounding the
--- number of iterations that a loop will exeucte in the simulator.
+-- number of iterations that a loop will execute in the simulator.
 ------------------------------------------------------------------------
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}

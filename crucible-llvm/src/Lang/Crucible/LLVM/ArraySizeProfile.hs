@@ -14,16 +14,20 @@ module Lang.Crucible.LLVM.ArraySizeProfile
 
 import GHC.IO (IO)
 import GHC.Real (fromIntegral)
+import GHC.TypeNats (type (<=))
 
 import Control.Applicative ((*>), pure)
 import Control.Lens (view)
 
 import Data.Type.Equality ((:~:)(..))
-import Data.Eq ((==))
+import Data.Eq ((==), (/=))
 import Data.Functor ((<$>))
 import Data.Foldable (msum)
-import Data.Function ((.), ($))
+import Data.Function ((.), ($), const)
+import Data.Bool (Bool(..))
+import Data.Tuple (fst)
 import Data.Maybe (Maybe(..))
+import Data.List (elem, filter, lookup)
 import Data.Int (Int)
 import Data.Text (Text, pack)
 import qualified Data.Vector as Vector
@@ -38,12 +42,13 @@ import Text.Show (show)
 import qualified Lang.Crucible.Backend as C
 import qualified Lang.Crucible.Types as C
 import qualified Lang.Crucible.CFG.Core as C
+import qualified Lang.Crucible.Simulator.BoundedExec as C
 import qualified Lang.Crucible.Simulator.CallFrame as C
 import qualified Lang.Crucible.Simulator.EvalStmt as C
 import qualified Lang.Crucible.Simulator.ExecutionTree as C
+import qualified Lang.Crucible.Simulator.GlobalState as C
 import qualified Lang.Crucible.Simulator.Intrinsics as C
 import qualified Lang.Crucible.Simulator.RegMap as C
-import qualified Lang.Crucible.Simulator.GlobalState as C
 
 import qualified Lang.Crucible.LLVM.Extension as C
 import qualified Lang.Crucible.LLVM.MemModel as C
@@ -53,7 +58,7 @@ import qualified Lang.Crucible.LLVM.MemModel.Generic as G
 
 import What4.Interface (IsExpr, IsExprBuilder, SymExpr, asNat, asUnsignedBV)
 
-type Profile = (Text, [Maybe Int])
+type Profile = (Text, [[Maybe Int]])
 
 ptrStartsAlloc :: IsExpr (SymExpr sym) =>
                   C.LLVMPtr sym w ->
@@ -116,23 +121,34 @@ argArraySizes :: IsExprBuilder sym =>
                  [Maybe Int]
 argArraySizes mem as = Vector.toList $ toVector (fmapFC (Wrap . regEntryIsArray mem) as) unwrap
 
-arraySizeProfile :: C.IsSymInterface sym =>
+arraySizeProfile :: (C.IsSymInterface sym, 1 <= C.ArchWidth arch) =>
                     sym ->
                     C.LLVMContext arch ->
                     IORef [Profile] ->
                     IO (C.ExecutionFeature p sym (C.LLVM arch) rtp)
-arraySizeProfile _ llvm cell = pure . C.ExecutionFeature $ \case
-  C.CallState _
-    (C.CrucibleCall _
-      C.CallFrame { C._frameCFG = g
-                  , C._frameRegs = regs
-                  }) sim -> do
-    let globals = view (C.stateTree . C.actFrame . C.gpGlobals) sim
-    case C.memImplHeap <$> C.lookupGlobal (C.llvmMemVar llvm) globals of
-      Nothing -> pure ()
-      Just mem ->
-        modifyIORef' cell (( pack . show $ C.cfgHandle g
-                           , argArraySizes (G.memAllocs mem) $ C.regMap regs
-                           ):)
-    pure Nothing
-  _ -> pure Nothing
+arraySizeProfile _ llvm cell = do
+  be <- C.runExecutionFeature . C.genericToExecutionFeature
+        <$> C.boundedExecFeature (const . pure $ Just 2) False
+  pure . C.ExecutionFeature $ \s -> do
+    case s of
+      C.CallState _
+        (C.CrucibleCall _
+          C.CallFrame { C._frameCFG = g
+                      , C._frameRegs = regs
+                      }) sim -> do
+        let globals = view (C.stateTree . C.actFrame . C.gpGlobals) sim
+        case C.memImplHeap <$> C.lookupGlobal (C.llvmMemVar llvm) globals of
+          Nothing -> pure ()
+          Just mem ->
+            modifyIORef' cell
+            $ \profs ->
+                let name = pack . show $ C.cfgHandle g
+                    sizes = argArraySizes (G.memAllocs mem) $ C.regMap regs
+                in case lookup name profs of
+                  Nothing -> (name, [sizes]):profs
+                  Just variants ->
+                    if elem sizes variants
+                    then profs
+                    else (name, sizes:variants):filter ((/= name) . fst) profs
+        be s
+      _ -> be s
