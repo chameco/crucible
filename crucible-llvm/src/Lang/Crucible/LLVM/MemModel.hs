@@ -22,6 +22,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TypeApplications #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Lang.Crucible.LLVM.MemModel
@@ -86,6 +87,7 @@ module Lang.Crucible.LLVM.MemModel
   , storeConstRaw
   , mallocRaw
   , mallocConstRaw
+  , isInitializedRaw
   , constToLLVMVal
   , constToLLVMValP
   , ptrMessage
@@ -170,6 +172,7 @@ import qualified Data.List as List
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe (mapMaybe)
+import           Data.Proxy (Proxy(..))
 import           Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import           Data.Set (Set)
@@ -189,9 +192,11 @@ import qualified Text.LLVM.AST as L
 
 import           What4.Interface
 import           What4.InterpretedFloatingPoint
+import           What4.Partial (PartialWithErr(..))
 
 import           Lang.Crucible.Backend
 import           Lang.Crucible.CFG.Common
+import           Lang.Crucible.CFG.Extension.Safety (treeToPredicate)
 import           Lang.Crucible.FunctionHandle
 import           Lang.Crucible.Types
 import           Lang.Crucible.Simulator.ExecutionTree
@@ -1036,6 +1041,35 @@ mallocConstRaw
   -> IO (LLVMPtr sym wptr, MemImpl sym)
 mallocConstRaw sym mem sz alignment =
   doMalloc sym G.HeapAlloc G.Immutable "<malloc>" mem sz alignment
+
+-- | Determine if a memory region is initialized.
+isInitializedRaw
+  :: forall sym proxy arch.
+     (IsSymInterface sym, HasPtrWidth (ArchWidth arch))
+  => sym
+  -> proxy arch
+  -> MemImpl sym
+  -> LLVMPtr sym (ArchWidth arch) -- ^ pointer to region
+  -> SymBV sym (ArchWidth arch)   -- ^ size of region in bytes
+  -> Alignment
+  -> IO (Pred sym)
+isInitializedRaw sym _ mem ptr sz alignment =
+  case userSymbol "i" of
+    Left err -> fail $ show err
+    Right indexSymbol -> do
+      i <- freshBoundVar sym indexSymbol $ BaseBVRepr PtrWidth
+      zero <- bvLit sym PtrWidth 0
+      inboundsLower <- bvUle sym zero $ varExpr sym i
+      inboundsUpper <- bvUgt sym sz $ varExpr sym i
+      inbounds <- andPred sym inboundsLower inboundsUpper
+      offset <- ptrAdd sym PtrWidth ptr $ varExpr sym i
+      partial <- loadRaw sym mem offset (mkStorageType $ Bitvector 1) alignment
+      case partial of
+        Err e -> addFailedAssertion sym . AssertFailureSimError $ show e
+        Partial.PartLLVMVal tree _ ->
+          forallPred sym i
+            =<< impliesPred sym inbounds
+            =<< treeToPredicate (Proxy @(LLVM arch)) sym tree
 
 ----------------------------------------------------------------------
 -- Packing and unpacking
