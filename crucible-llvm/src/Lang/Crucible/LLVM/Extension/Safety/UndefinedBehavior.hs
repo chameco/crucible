@@ -143,6 +143,9 @@ data UndefinedBehavior (e :: CrucibleType -> Type) where
   ReadUnallocated :: PointerPair e w
                   -> UndefinedBehavior e
 
+  ReadUninitialized :: PointerPair e w
+                    -> UndefinedBehavior e
+
   -- -------------------------------- Pointer arithmetic
 
   PtrAddOffsetOutOfBounds :: PointerPair e w
@@ -216,6 +219,7 @@ standard =
     MemsetInvalidRegion{} -> CXXStd CXX17
     ReadBadAlignment _ _      -> CStd C99
     ReadUnallocated _         -> CStd C99
+    ReadUninitialized _       -> CStd C99
 
     -- -------------------------------- Pointer arithmetic
 
@@ -258,6 +262,7 @@ cite = text .
     MemsetInvalidRegion{} -> "https://en.cppreference.com/w/cpp/string/byte/memset"
     ReadBadAlignment _ _      -> "§6.2.8 Alignment of objects, ¶?"
     ReadUnallocated _         -> "§6.2.4 Storage durations of objects, ¶2"
+    ReadUninitialized _       -> "§6.2.4 Storage durations of objects, ¶2"
 
     -- -------------------------------- Pointer arithmetic
 
@@ -312,6 +317,9 @@ explain =
       "Read a value from a pointer with incorrect alignment"
     ReadUnallocated _ ->
       "Read a value from a pointer into an unallocated region"
+
+    ReadUninitialized _ ->
+      "Read a value from a pointer into an uninitialized region"
 
     -- -------------------------------- Pointer arithmetic
 
@@ -377,6 +385,7 @@ detailsReg proxySym =
       , ppPtr1 ptr
       ]
     ReadUnallocated ptr -> [ ppPtr1 ptr ]
+    ReadUninitialized ptr -> [ ppPtr1 ptr ]
 
     -------------------------------- Pointer arithmetic
 

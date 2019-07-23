@@ -655,7 +655,7 @@ readMem sym w l tp alignment m = do
     -- then decompose this read into reading the individual bytes and
     -- assembling them to obtain the value, without introducing any
     -- ite operations
-    Just (arr, _arr_sz) -> do
+    Just (arr, arr_sz, _alloc_sz) -> do
       let loadArrayByteFn :: Offset -> IO (PartLLVMVal arch sym)
           loadArrayByteFn off = do
             blk0 <- natLit sym 0
@@ -663,8 +663,14 @@ readMem sym w l tp alignment m = do
               =<< bvLit sym w (bytesToInteger off)
             byte <- arrayLookup sym arr $ Ctx.singleton idx
             return $ Partial.totalLLVMVal sym $ LLVMValInt blk0 byte
-      genValueCtor sym (memEndianForm m)
+      PartLLVMVal p v <- genValueCtor sym (memEndianForm m)
         =<< loadTypedValueFromBytes 0 tp loadArrayByteFn
+      end <- bvAdd sym (llvmPointerOffset l) sz
+      initialized <- bvUle sym end arr_sz
+      return $ PartLLVMVal
+        (Partial.addUndefinedBehaviorCondition sym
+          (UB.ReadUninitialized $ UB.pointerView l)
+          initialized p) v
     Nothing -> readMem' sym w (memEndianForm m) l tp alignment (memWrites m)
   case part_val of
     e@(W4P.Err _) -> return e
@@ -672,8 +678,8 @@ readMem sym w l tp alignment m = do
       let ub1 = UB.ReadUnallocated  (UB.pointerView l)
           ub2 = UB.ReadBadAlignment (UB.pointerView l) alignment
           p'  = W4AT.And (p :| [ W4AT.Leaf (undefinedBehavior ub1 p1)
-                              , W4AT.Leaf (undefinedBehavior ub2 p2)
-                              ])
+                               , W4AT.Leaf (undefinedBehavior ub2 p2)
+                               ])
       in return $ PartLLVMVal p' v
 
 data CacheEntry sym w =
@@ -1314,7 +1320,7 @@ writeMemWithAllocationCheck is_allocated sym w ptr tp alignment val mem = do
     -- then decompose this write into disassembling the value to individual
     -- bytes, writing them in the SMT array, and writing the updated SMT array
     -- in the memory
-    Just (arr, arr_sz) -> do
+    Just (arr, _arr_sz, alloc_sz) -> do
       let subFn :: ValueLoad Addr -> IO (PartLLVMVal arch sym)
           subFn = \case
             LastStore val_view -> applyView
@@ -1343,8 +1349,7 @@ writeMemWithAllocationCheck is_allocated sym w ptr tp alignment val mem = do
                   arrayUpdate sym acc_arr (Ctx.singleton idx) byte
               _ -> return acc_arr
       res_arr <- foldM storeArrayByteFn arr [0 .. (sz - 1)]
-      arr_sz_bv <- constOffset sym w arr_sz
-      return $ memAddWrite ptr (MemArrayStore res_arr (Just arr_sz_bv)) mem
+      return $ memAddWrite ptr (MemArrayStore res_arr (Just alloc_sz)) mem
     Nothing -> return $ memAddWrite ptr (MemStore val tp alignment) mem
   return (mem', p1, p2)
 
@@ -1607,24 +1612,25 @@ asMemAllocationArrayStore ::
   NatRepr w ->
   LLVMPtr sym w {- ^ Pointer -} ->
   Mem sym ->
-  IO (Maybe (SymArray sym (SingleCtx (BaseBVType w)) (BaseBVType 8), Bytes))
+  IO (Maybe ( SymArray sym (SingleCtx (BaseBVType w)) (BaseBVType 8)
+            , SymBV sym w
+            , SymBV sym w
+            ))
 asMemAllocationArrayStore sym w ptr mem
   | Just blk_no <- asNat (llvmPointerBlock ptr)
-  , [SomeAlloc _ _ (Just sz_bv) _ _ _] <- List.nub (possibleAllocs blk_no mem)
-  , Just sz <- asUnsignedBV sz_bv = do
+  , [SomeAlloc _ _ (Just sz_bv) _ _ _] <- List.nub (possibleAllocs blk_no mem) = do
     let findArrayStore ::
           [MemWrite sym] ->
-          IO (Maybe (SymArray sym (SingleCtx (BaseBVType w)) (BaseBVType 8)))
+          IO (Maybe ( SymArray sym (SingleCtx (BaseBVType w)) (BaseBVType 8)
+                    , SymBV sym w))
         findArrayStore = \case
           head_mem_write : tail_mem_writes -> case head_mem_write of
             MemWrite write_ptr write_source
               | Just write_blk_no <- asNat (llvmPointerBlock write_ptr)
               , blk_no == write_blk_no
-              , MemArrayStore arr (Just arr_store_sz_bv) <- write_source
-              , Just arr_store_sz <- asUnsignedBV arr_store_sz_bv
-              , sz == arr_store_sz
+              , MemArrayStore arr (Just arr_sz) <- write_source
               , Just Refl <- testEquality w (ptrWidth write_ptr) ->
-                return $ Just arr
+                return $ Just (arr, arr_sz)
               | Just write_blk_no <- asNat (llvmPointerBlock write_ptr)
               , blk_no /= write_blk_no ->
                 findArrayStore tail_mem_writes
@@ -1635,13 +1641,18 @@ asMemAllocationArrayStore sym w ptr mem
               rhs_result <- findArrayStore $
                 (memWritesAtConstant blk_no rhs_mem_writes) ++ tail_mem_writes
               case (lhs_result, rhs_result) of
-                (Just lhs_arr, Just rhs_arr) ->
-                  Just <$> arrayIte sym cond lhs_arr rhs_arr
+                (Just (lhs_arr, lhs_arr_sz), Just (rhs_arr, rhs_arr_sz)) -> do
+                  arr <- arrayIte sym cond lhs_arr rhs_arr
+                  arr_sz <- bvIte sym cond lhs_arr_sz rhs_arr_sz
+                  return $ Just (arr, arr_sz)
                 _ -> return Nothing
           [] -> return Nothing
     result <- findArrayStore $ memWritesAtConstant blk_no $ memWrites mem
     return $ case result of
-      Just arr -> Just (arr, fromInteger sz)
+      Just (arr, arr_sz)
+        | Just Refl <- testEquality w (bvWidth sz_bv) ->
+            Just (arr, arr_sz, sz_bv)
+        | otherwise -> Nothing
       Nothing -> Nothing
   | otherwise = return Nothing
 

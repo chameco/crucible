@@ -30,6 +30,7 @@ module Lang.Crucible.LLVM.MemModel.Partial
   , ppAssertion
   , MemoryLoadError(..)
   , totalLLVMVal
+  , addUndefinedBehaviorCondition
   , bvConcat
   , consArray
   , appendArray
