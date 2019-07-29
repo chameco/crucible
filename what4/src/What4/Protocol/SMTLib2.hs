@@ -517,6 +517,7 @@ instance SMTLib2Tweaks a => SMTWriter (Writer a) where
 
   writeCommand conn (SMT2.Cmd cmd) =
     do let cmdout = Lazy.toStrict (Builder.toLazyText cmd)
+       putStrLn $ Text.unpack cmdout
        Streams.write (Just (cmdout <> "\n")) (connHandle conn)
        -- force a flush
        Streams.write (Just "") (connHandle conn)
