@@ -667,7 +667,7 @@ readMem sym w l tp alignment m = do
         =<< loadTypedValueFromBytes 0 tp loadArrayByteFn
     Nothing -> readMem' sym w (memEndianForm m) l tp alignment (memWrites m)
   case part_val of
-    e@(W4P.Err _) -> return e
+    -- e@(W4P.Err _) -> return e
     PartLLVMVal p v ->
       let ub1 = UB.ReadUnallocated  (UB.pointerView l)
           ub2 = UB.ReadBadAlignment (UB.pointerView l) alignment
@@ -675,6 +675,17 @@ readMem sym w l tp alignment m = do
                               , W4AT.Leaf (undefinedBehavior ub2 p2)
                               ])
       in return $ PartLLVMVal p' v
+    e -> case storageTypeF tp of
+      Bitvector w' ->
+        viewSome buildResult (mkNatRepr $ bytesToNatural (8 * w'))
+      _ -> pure e
+      where buildResult :: forall w'. NatRepr w' -> IO (PartLLVMVal arch sym)
+            buildResult n
+              | Just LeqProof <- testLeq (knownNat @1) n = do
+                  blk <- freshConstant sym emptySymbol BaseNatRepr
+                  off <- freshConstant sym emptySymbol $ BaseBVRepr n
+                  pure . PartLLVMVal (W4AT.Leaf $ Safety.safe sym) $ LLVMValInt blk off
+              | otherwise = pure e
 
 data CacheEntry sym w =
   CacheEntry !(StorageType) !(SymNat sym) !(SymBV sym w)
