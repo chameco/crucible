@@ -886,12 +886,17 @@ intra_branch p t_label f_label tgt = do
     Nothing ->
       ReaderT $ return . SymbolicBranchState p t_label f_label tgt
 
-    Just chosen_branch ->
-      do p' <- liftIO $ predEqConst sym p chosen_branch
-         let a_frame = if chosen_branch then t_label else f_label
+    Just _chosen_branch ->
+      -- do p' <- liftIO $ predEqConst sym p chosen_branch
+      --    let a_frame = if chosen_branch then t_label else f_label
+      --    loc <- liftIO $ getCurrentProgramLoc sym
+      --    liftIO $ addAssumption sym (LabeledPred p' (ExploringAPath loc (pausedLoc a_frame)))
+      --    resumeFrame a_frame ctx
+      do var <- liftIO $ freshConstant sym emptySymbol BaseBoolRepr
          loc <- liftIO $ getCurrentProgramLoc sym
-         liftIO $ addAssumption sym (LabeledPred p' (ExploringAPath loc (pausedLoc a_frame)))
-         resumeFrame a_frame ctx
+         p' <- liftIO $ eqPred sym var p
+         liftIO $ addAssumption sym (LabeledPred p' (AssumptionReason loc "Predicate made symbolic"))
+         ReaderT $ return . SymbolicBranchState var t_label f_label tgt
 {-# INLINABLE intra_branch #-}
 
 -- | Branch with a merge point inside this frame.
